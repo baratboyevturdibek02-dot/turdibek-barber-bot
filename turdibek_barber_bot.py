@@ -19,13 +19,13 @@ from telegram.ext import (
 # ========================
 # SOZLAMALAR
 # ========================
-TOKEN = os.environ.get("TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+TOKEN = "SIZNING_BOT_TOKENINGIZ"  # @BotFather dan olingan token
+ADMIN_ID = 123456789              # Barberning Telegram ID si
 
 # Sartaroshxona lokatsiyasi
-LOCATION_LAT = 40,5130926
-LOCATION_LON = 68,7694332
-LOCATION_ADDRESS = "Firdavs salon, Gulistan, Sirdaryo Region,Quruvchilar ko'chasi"
+LOCATION_LAT = 41.2995
+LOCATION_LON = 69.2401
+LOCATION_ADDRESS = "Toshkent sh., Chilonzor tumani, Bunyodkor ko'chasi 12-uy"
 
 # Fayl — navbatlar saqlanadigan joy
 DATA_FILE = "navbatlar.json"
