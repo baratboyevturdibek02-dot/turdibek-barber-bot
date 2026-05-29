@@ -1,20 +1,51 @@
-import json, os
+import json
+import os
+import re
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+from telegram import (
+    Update, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ConversationHandler, filters,
+    ContextTypes
+)
 
-TOKEN = os.environ.get("TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-LOCATION_LAT = 40,5130926
-LOCATION_LON = 68,7694332
-LOCATION_ADDRESS = " Gulistan, Sirdaryo Region,Firdavs Salon,Qurilish ko'chasi"
+# ========================
+# SOZLAMALAR
+# ========================
+TOKEN = "SIZNING_BOT_TOKENINGIZ"  # @BotFather dan olingan token
+ADMIN_ID = 123456789              # Barberning Telegram ID si (Raqam ko'rinishida)
+
+# Sartaroshxona lokatsiyasi
+LOCATION_LAT = 41.2995
+LOCATION_LON = 69.2401
+LOCATION_ADDRESS = "Toshkent sh., Chilonzor tumani, Bunyodkor ko'chasi 12-uy"
+
+# Fayl — navbatlar saqlanadigan joy
 DATA_FILE = "navbatlar.json"
-CHOOSING_DATE, CHOOSING_TIME, ENTERING_NAME, ENTERING_PHONE, CONFIRMING = range(5)
+
+# Conversation holatlari
+(
+    CHOOSING_DATE,
+    CHOOSING_TIME,
+    ENTERING_NAME,
+    ENTERING_PHONE,
+    CONFIRMING,
+) = range(5)
+
+# ========================
+# MA'LUMOTLAR BOSHQARUVI
+# ========================
 
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
     return {}
 
 def save_data(data):
@@ -22,11 +53,21 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def is_slot_taken(date, time):
-    return f"{date}_{time}" in load_data()
+    data = load_data()
+    return f"{date}_{time}" in data
 
 def save_appointment(date, time, user_id, name, phone, username):
     data = load_data()
-    data[f"{date}_{time}"] = {"date": date, "time": time, "user_id": user_id, "name": name, "phone": phone, "username": username or "-"}
+    key = f"{date}_{time}"
+    data[key] = {
+        "date": date,
+        "time": time,
+        "user_id": user_id,
+        "name": name,
+        "phone": phone,
+        "username": username or "—",
+        "booked_at": datetime.now().strftime("%d.%m.%Y %H:%M")
+    }
     save_data(data)
 
 def cancel_appointment(date, time):
@@ -38,252 +79,483 @@ def cancel_appointment(date, time):
         return True
     return False
 
-def get_next_days():
+# ========================
+# YORDAMCHI FUNKSIYALAR
+# ========================
+
+def get_next_days(n=7):
     days = []
     today = datetime.now()
-    for i in range(7):
+    for i in range(n):
         day = today + timedelta(days=i)
-        if day.weekday() < 6:
+        if day.weekday() < 6:  # 0-5: Dush-Shanba (Yakshanba dam olish)
             days.append(day)
     return days
 
-def fmt(dt):
-    w = {0:"Dush",1:"Sesh",2:"Chor",3:"Pay",4:"Juma",5:"Shan",6:"Yak"}
-    return f"{w[dt.weekday()]} {dt.strftime('%d.%m')}"
+def format_date(dt):
+    weekdays = {
+        0: "Dush", 1: "Sesh", 2: "Chor",
+        3: "Pay",  4: "Juma", 5: "Shan"
+    }
+    return f"{weekdays[dt.weekday()]} {dt.strftime('%d.%m')}"
 
-def get_slots():
+def get_time_slots():
     slots = []
-    t = datetime.strptime("09:00", "%H:%M")
-    e = datetime.strptime("22:00", "%H:%M")
-    while t <= e:
-        slots.append(t.strftime("%H:%M"))
-        t += timedelta(minutes=30)
+    start = datetime.strptime("09:00", "%H:%M")
+    end   = datetime.strptime("19:00", "%H:%M")
+    while start <= end:
+        slots.append(start.strftime("%H:%M"))
+        start += timedelta(minutes=30)
     return slots
 
-def menu(is_admin=False):
-    if is_admin:
-        kb = [[KeyboardButton("📅 Navbat olish")],[KeyboardButton("📋 Bugungi mijozlar")],[KeyboardButton("📊 Barcha navbatlar")],[KeyboardButton("🕐 Bo'sh vaqtlar"), KeyboardButton("📍 Lokatsiya")],[KeyboardButton("ℹ️ Ma'lumot")]]
-    else:
-        kb = [[KeyboardButton("📅 Navbat olish")],[KeyboardButton("🕐 Bo'sh vaqtlar"), KeyboardButton("📍 Lokatsiya")],[KeyboardButton("ℹ️ Ma'lumot"), KeyboardButton("❌ Navbatni bekor qilish")]]
-    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+def main_menu_keyboard():
+    keyboard = [
+        [KeyboardButton("📅 Navbat olish")],
+        [KeyboardButton("🕐 Bo'sh vaqtlar"), KeyboardButton("📍 Lokatsiya")],
+        [KeyboardButton("ℹ️ Ma'lumot"), KeyboardButton("❌ Navbatni bekor qilish")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def admin_menu_keyboard():
+    keyboard = [
+        [KeyboardButton("📋 Bugungi mijozlar")],
+        [KeyboardButton("📊 Barcha navbatlar")],
+        [KeyboardButton("📅 Navbat olish")],
+        [KeyboardButton("📍 Lokatsiya"), KeyboardButton("ℹ️ Ma'lumot")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# ========================
+# START COMMAND
+# ========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_admin = user.id == ADMIN_ID
-    text = f"✂️ *Turdibek_Barber* ga xush kelibsiz!\n\nSalom, {user.first_name}! 👋\n{'🔑 *Admin paneli*\n' if is_admin else ''}Tugmani tanlang:"
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=menu(is_admin))
+    is_admin = (user.id == ADMIN_ID)
+    context.user_data.clear()  # Keshlarni tozalash
 
-async def navbat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    days = get_next_days()
-    btns = []
+    welcome = (
+        f"✂️ *Turdibek_Barber* ga xush kelibsiz!\n\n"
+        f"Salom, {user.first_name}! 👋\n"
+        f"Men sizga qulay navbat olishda yordam beraman.\n\n"
+        f"{'🔑 *Admin paneli ulandi*\n' if is_admin else ''}"
+        f"Quyidagi tugmalardan birini tanlang:"
+    )
+
+    kb = admin_menu_keyboard() if is_admin else main_menu_keyboard()
+    await update.message.reply_text(welcome, parse_mode="Markdown", reply_markup=kb)
+
+# ========================
+# NAVBAT OLISH — ConversationHandler
+# ========================
+
+async def navbat_olish_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()  # Yangi sessiya uchun eski keshlarni tozalash
+    days = get_next_days(7)
+    buttons = []
     row = []
-    for d in days:
-        row.append(InlineKeyboardButton(fmt(d), callback_data=f"date_{d.strftime('%Y-%m-%d')}"))
+    for day in days:
+        row.append(InlineKeyboardButton(format_date(day), callback_data=f"date_{day.strftime('%Y-%m-%d')}"))
         if len(row) == 3:
-            btns.append(row); row = []
-    if row: btns.append(row)
-    btns.append([InlineKeyboardButton("❌ Bekor", callback_data="cancel")])
-    await update.message.reply_text("📅 *Kun tanlang:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel")])
+
+    await update.message.reply_text(
+        "📅 *Kun tanlang:*\n_(Yakshanba dam olish kuni)_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
     return CHOOSING_DATE
 
 async def choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("❌ Navbat olish bekor qilindi.")
+        context.user_data.clear()
         return ConversationHandler.END
-    date = q.data.replace("date_", "")
-    context.user_data["date"] = date
-    slots = get_slots()
-    btns = []
+
+    selected_date = query.data.replace("date_", "")
+    context.user_data["selected_date"] = selected_date
+
+    slots = get_time_slots()
+    buttons = []
     row = []
-    for s in slots:
-        taken = is_slot_taken(date, s)
-        row.append(InlineKeyboardButton(f"🔴 {s}" if taken else f"✅ {s}", callback_data="taken" if taken else f"time_{s}"))
+    for slot in slots:
+        taken = is_slot_taken(selected_date, slot)
+        label = f"🔴 {slot}" if taken else f"✅ {slot}"
+        cb = "taken" if taken else f"time_{slot}"
+        row.append(InlineKeyboardButton(label, callback_data=cb))
         if len(row) == 4:
-            btns.append(row); row = []
-    if row: btns.append(row)
-    btns.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="back")])
-    dt = datetime.strptime(date, "%Y-%m-%d")
-    await q.edit_message_text(f"🕐 *{fmt(dt)} — vaqt tanlang:*\n✅ bo'sh  🔴 band", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="back_date")])
+
+    dt = datetime.strptime(selected_date, "%Y-%m-%d")
+    await query.edit_message_text(
+        f"🕐 *{format_date(dt)} uchun vaqt tanlang:*\n\n"
+        f"✅ — bo'sh  🔴 — band",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
     return CHOOSING_TIME
 
 async def choose_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "taken":
-        await q.answer("❌ Bu vaqt band!", show_alert=True)
+    query = update.callback_query
+    
+    if query.data == "taken":
+        await query.answer("❌ Bu vaqt allaqachon band!", show_alert=True)
         return CHOOSING_TIME
-    if q.data == "back":
-        days = get_next_days()
-        btns = []
+
+    if query.data == "back_date":
+        await query.answer()
+        days = get_next_days(7)
+        buttons = []
         row = []
-        for d in days:
-            row.append(InlineKeyboardButton(fmt(d), callback_data=f"date_{d.strftime('%Y-%m-%d')}"))
+        for day in days:
+            row.append(InlineKeyboardButton(format_date(day), callback_data=f"date_{day.strftime('%Y-%m-%d')}"))
             if len(row) == 3:
-                btns.append(row); row = []
-        if row: btns.append(row)
-        btns.append([InlineKeyboardButton("❌ Bekor", callback_data="cancel")])
-        await q.edit_message_text("📅 *Kun tanlang:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel")])
+        await query.edit_message_text(
+            "📅 *Kun tanlang:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return CHOOSING_DATE
-    context.user_data["time"] = q.data.replace("time_", "")
-    await q.edit_message_text(f"✅ *{context.user_data['date']} soat {context.user_data['time']}*\n\n📝 Ismingizni kiriting:")
+
+    await query.answer()
+    selected_time = query.data.replace("time_", "")
+    context.user_data["selected_time"] = selected_time
+    
+    # Inline tugmalarni tahrirlab chalkashlikni oldini olamiz
+    await query.edit_message_text(
+        f"✅ Sana: *{context.user_data['selected_date']}*\n"
+        f"✅ Vaqt: *{selected_time}* tanlandi.",
+        parse_mode="Markdown"
+    )
+    
+    # Matnli xabar yuboramiz
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="📝 *Ism va familiyangizni kiriting:*",
+        parse_mode="Markdown"
+    )
     return ENTERING_NAME
 
 async def enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
-    if len(name) < 3:
-        await update.message.reply_text("⚠️ Kamida 3 harf kiriting.")
+    
+    # Foydalanuvchi adashib pastki menyu tugmalarini bossa himoya
+    if name in ["📅 Navbat olish", "🕐 Bo'sh vaqtlar", "📍 Lokatsiya", "ℹ️ Ma'lumot", "❌ Navbatni bekor qilish", "📋 Bugungi mijozlar", "📊 Barcha navbatlar"]:
+        await update.message.reply_text("⚠️ Iltimos, avval ismingizni yozib yuboring.\nJarayonni to'xtatish uchun /cancel bosing.")
         return ENTERING_NAME
+
+    if len(name) < 3:
+        await update.message.reply_text("⚠️ Iltimos, haqiqiy ism kiriting (kamida 3 harf).")
+        return ENTERING_NAME
+
     context.user_data["name"] = name
-    await update.message.reply_text(f"👤 *{name}*\n\n📞 Telefon raqamingiz:\n_(+998901234567)_", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"👤 Rahmat, *{name}*.\n\n"
+        f"📞 Telefon raqamingizni kiriting:\n"
+        f"_(Masalan: +998901234567)_",
+        parse_mode="Markdown"
+    )
     return ENTERING_PHONE
 
 async def enter_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
-    if not (phone.startswith("+") and len(phone) >= 12):
-        await update.message.reply_text("⚠️ Format: +998901234567")
+    
+    # O'zbekiston raqamlari formati uchun qat'iy tekshiruv (Regex)
+    if not re.match(r"^\+998\d{9}$", phone):
+        await update.message.reply_text("⚠️ Noto'g'ri format. Telefon raqamingizni quyidagicha kiriting:\n+998901234567")
         return ENTERING_PHONE
+
     context.user_data["phone"] = phone
-    d = context.user_data["date"]
-    t = context.user_data["time"]
-    n = context.user_data["name"]
-    dt = datetime.strptime(d, "%Y-%m-%d")
-    btns = [[InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"), InlineKeyboardButton("❌ Bekor", callback_data="cancel_b")]]
+    date = context.user_data["selected_date"]
+    time = context.user_data["selected_time"]
+    name = context.user_data["name"]
+    dt = datetime.strptime(date, "%Y-%m-%d")
+
+    buttons = [
+        [
+            InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"),
+            InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_booking")
+        ]
+    ]
+
     await update.message.reply_text(
-        f"📋 *Navbat:*\n\n📅 {fmt(dt)} ({d})\n🕐 {t}\n👤 {n}\n📞 {phone}\n\nTasdiqlaysizmi?",
-        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+        f"📋 *Navbat ma'lumotlari:*\n\n"
+        f"📅 Sana: *{format_date(dt)} ({date})*\n"
+        f"🕐 Vaqt: *{time}*\n"
+        f"👤 Ism: *{name}*\n"
+        f"📞 Tel: *{phone}*\n\n"
+        f"Tasdiqlaysizmi?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
     return CONFIRMING
 
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "cancel_b":
-        await q.edit_message_text("❌ Bekor qilindi.")
+async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel_booking":
+        await query.edit_message_text("❌ Navbat olish bekor qilindi.")
+        context.user_data.clear()
         return ConversationHandler.END
+
     user = update.effective_user
-    d = context.user_data["date"]
-    t = context.user_data["time"]
-    n = context.user_data["name"]
-    p = context.user_data["phone"]
-    if is_slot_taken(d, t):
-        await q.edit_message_text("⚠️ Bu vaqt band bo'ldi. Qaytadan urinib ko'ring.")
+    date = context.user_data.get("selected_date")
+    time = context.user_data.get("selected_time")
+    name = context.user_data.get("name")
+    phone = context.user_data.get("phone")
+
+    if not date or not time:
+        await query.edit_message_text("⚠️ Xatolik yuz berdi. Iltimos, navbatni boshqatdan oling.")
+        context.user_data.clear()
         return ConversationHandler.END
-    save_appointment(d, t, user.id, n, p, user.username)
-    dt = datetime.strptime(d, "%Y-%m-%d")
-    await q.edit_message_text(
-        f"🎉 *Navbat olindi!*\n\n📅 {fmt(dt)} ({d})\n🕐 {t}\n👤 {n}\n📞 {p}\n\n📍 {LOCATION_ADDRESS}\n\n_Vaqtida keling!_ ✂️",
-        parse_mode="Markdown")
+
+    # Vaqt band bo'lib qolganligini oxirgi marta tekshirish
+    if is_slot_taken(date, time):
+        await query.edit_message_text("⚠️ Kechirasiz, ushbu vaqt hozirgina band bo'lib qoldi. Boshqa vaqtni tanlang.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    save_appointment(date, time, user.id, name, phone, user.username)
+
+    dt = datetime.strptime(date, "%Y-%m-%d")
+    await query.edit_message_text(
+        f"🎉 *Navbat muvaffaqiyatli olindi!*\n\n"
+        f"📅 {format_date(dt)} ({date})\n"
+        f"🕐 Soat {time}\n"
+        f"👤 {name}\n"
+        f"📞 {phone}\n\n"
+        f"📍 Manzil: {LOCATION_ADDRESS}\n\n"
+        f"_Iltimos, vaqtida keling!_ ✂️",
+        parse_mode="Markdown"
+    )
+
+    # Admin ga xabar yo'llash
     try:
-        await context.bot.send_message(ADMIN_ID, f"🔔 *Yangi navbat!*\n📅 {fmt(dt)} {t}\n👤 {n}\n📞 {p}", parse_mode="Markdown")
-    except:
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"🔔 *Yangi navbat!*\n\n"
+            f"📅 {format_date(dt)} soat {time}\n"
+            f"👤 {name}\n"
+            f"📞 {phone}\n"
+            f"🆔 @{user.username if user.username else 'Username yoq'}",
+            parse_mode="Markdown"
+        )
+    except Exception:
         pass
+
+    context.user_data.clear()
     return ConversationHandler.END
 
-async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Bekor.", reply_markup=menu())
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    kb = admin_menu_keyboard() if update.effective_user.id == ADMIN_ID else main_menu_keyboard()
+    await update.message.reply_text("❌ Amal bekor qilindi.", reply_markup=kb)
     return ConversationHandler.END
+
+# ========================
+# UMUMIY XIZMATLAR
+# ========================
 
 async def bosh_vaqtlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "🕐 *Bo'sh vaqtlar:*\n\n"
-    for day in get_next_days():
-        ds = day.strftime("%Y-%m-%d")
-        free = [s for s in get_slots() if not is_slot_taken(ds, s)]
-        text += f"📅 *{fmt(day)}*\n  " + ("  ".join(free[:10]) if free else "🔴 Band") + "\n\n"
+    days = get_next_days(7)
+    text = "🕐 *Bo'sh vaqtlar (keyingi 7 kun):*\n\n"
+
+    for day in days:
+        date_str = day.strftime("%Y-%m-%d")
+        dt_label = format_date(day)
+        slots = get_time_slots()
+        free_slots = [s for s in slots if not is_slot_taken(date_str, s)]
+
+        if free_slots:
+            text += f"📅 *{dt_label}* ({date_str})\n"
+            text += "  " + "  ".join(free_slots[:6]) # Ekran to'lib ketmasligi uchun satr qisqartirildi
+            if len(free_slots) > 6:
+                text += f"\n  ...va yana {len(free_slots)-6} ta bo'sh vaqt bor."
+            text += "\n\n"
+        else:
+            text += f"📅 *{dt_label}* — 🔴 Hamma vaqt band\n\n"
+
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def lokatsiya(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📍 *Manzil:*\n{LOCATION_ADDRESS}", parse_mode="Markdown")
+    await update.message.reply_text(f"📍 *Turdibek Barber manzili:*\n{LOCATION_ADDRESS}", parse_mode="Markdown")
     await update.message.reply_location(latitude=LOCATION_LAT, longitude=LOCATION_LON)
 
 async def malumot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✂️ *Turdibek Barber*\n\n💈 Xizmatlar:\n• Soch — 60.000\n• Soqol — 20.000\n• Soch+Soqol — 90.000\n• Bolalar — 40.000\n\n⏰ Dush-Shan 09:00-22:00\n📞 +998 94 971 04 05",
-        parse_mode="Markdown")
+    text = (
+        "✂️ *Turdibek Barber*\n\n"
+        "💈 Xizmatlar:\n"
+        "  • Soch olish — 30.000 so'm\n"
+        "  • Soqol olish — 20.000 so'm\n"
+        "  • Soch + Soqol — 45.000 so'm\n\n"
+        "⏰ Ish vaqti: Dush-Shan 09:00-19:00\n"
+        "  (Yakshanba — dam olish kuni)\n\n"
+        "📞 Telefon: +998 90 123 45 67"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def bekor_qilish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = load_data()
-    appts = [v for v in data.values() if v["user_id"] == user.id]
-    if not appts:
-        await update.message.reply_text("📭 Navbat yo'q.")
-        return
-    btns = [[InlineKeyboardButton(f"🗑 {a['date']} {a['time']}", callback_data=f"del_{a['date']}_{a['time']}")] for a in appts]
-    btns.append([InlineKeyboardButton("❌ Yopish", callback_data="close")])
-    await update.message.reply_text("📋 *Navbatlaringiz:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    user_appointments = [v for v in data.values() if v["user_id"] == user.id]
 
-async def del_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "close":
-        await q.edit_message_text("✅ Yopildi.")
+    if not user_appointments:
+        await update.message.reply_text("📭 Sizda hech qanday faol navbat aniqlanmadi.")
         return
-    if q.data.startswith("del_"):
-        parts = q.data[4:].rsplit("_", 1)
-        cancel_appointment(parts[0], parts[1])
-        await q.edit_message_text(f"✅ Bekor qilindi.")
 
-async def bugungi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = []
+    for appt in sorted(user_appointments, key=lambda x: x["date"]):
+        label = f"🗑 {appt['date']} {appt['time']}"
+        cb = f"del_{appt['date']}_{appt['time']}"
+        buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+    buttons.append([InlineKeyboardButton("❌ Yopish", callback_data="close")])
+
+    await update.message.reply_text(
+        "📋 *Sizning navbatlaringiz:*\nBekor qilmoqchi bo'lgan navbatingizni tanlang:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def del_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "close":
+        await query.edit_message_text("✅ Oyna yopildi.")
+        return
+
+    if query.data.startswith("del_"):
+        parts = query.data.replace("del_", "").rsplit("_", 1)
+        date, time = parts[0], parts[1]
+        cancel_appointment(date, time)
+        await query.edit_message_text(f"✅ *{date} soat {time}* dagi navbatingiz muvaffaqiyatli bekor qilindi.", parse_mode="Markdown")
+
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"❌ *Navbat bekor qilindi!*\n📅 Sana: {date}\n🕐 Vaqt: {time}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+# ========================
+# ADMIN XIZMATLARI
+# ========================
+
+async def bugungi_mijozlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Ruxsat yo'q.")
         return
+
     today = datetime.now().strftime("%Y-%m-%d")
-    appts = sorted([v for v in load_data().values() if v["date"] == today], key=lambda x: x["time"])
-    if not appts:
-        await update.message.reply_text(f"📭 Bugun navbat yo'q.")
-        return
-    text = f"📋 *Bugun ({today}):*\n\n"
-    for i, a in enumerate(appts, 1):
-        text += f"*{i}. {a['time']}* — {a['name']} | {a['phone']}\n"
-    await update.message.reply_text(text + f"\n📊 Jami: {len(appts)}", parse_mode="Markdown")
+    data = load_data()
+    today_list = sorted([v for v in data.values() if v["date"] == today], key=lambda x: x["time"])
 
-async def barcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Ruxsat yo'q.")
+    if not today_list:
+        await update.message.reply_text(f"📭 Bugun ({today}) uchun hech qanday navbatlar yo'q.")
         return
+
+    text = f"📋 *Bugungi mijozlar ({today}):*\n{'─'*30}\n"
+    for i, appt in enumerate(today_list, 1):
+        text += f"\n*{i}. {appt['time']}* — {appt['name']}\n   📞 {appt['phone']}\n   👤 @{appt['username']}\n"
+    text += f"\n{'─'*30}\n📊 Jami: {len(today_list)} ta mijoz"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def barcha_navbatlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
     data = load_data()
     if not data:
-        await update.message.reply_text("📭 Navbat yo'q.")
+        await update.message.reply_text("📭 Hozircha bazada hech qanday navbat yo'q.")
         return
-    appts = sorted(data.values(), key=lambda x: (x["date"], x["time"]))
-    cur = None
-    text = "📊 *Barcha navbatlar:*\n"
-    for a in appts:
-        if a["date"] != cur:
-            cur = a["date"]
-            dt = datetime.strptime(cur, "%Y-%m-%d")
-            text += f"\n📅 *{fmt(dt)}:*\n"
-        text += f"  🕐 {a['time']} — {a['name']} | {a['phone']}\n"
-    await update.message.reply_text(text + f"\n📊 Jami: {len(appts)}", parse_mode="Markdown")
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text
-    if t == "🕐 Bo'sh vaqtlar": await bosh_vaqtlar(update, context)
-    elif t == "📍 Lokatsiya": await lokatsiya(update, context)
-    elif t == "ℹ️ Ma'lumot": await malumot(update, context)
-    elif t == "❌ Navbatni bekor qilish": await bekor_qilish(update, context)
-    elif t == "📋 Bugungi mijozlar": await bugungi(update, context)
-    elif t == "📊 Barcha navbatlar": await barcha(update, context)
+    sorted_appts = sorted(data.values(), key=lambda x: (x["date"], x["time"]))
+    current_date = None
+    text = "📊 *Barcha faol navbatlar:*\n"
+
+    for appt in sorted_appts:
+        if appt["date"] != current_date:
+            current_date = appt["date"]
+            dt = datetime.strptime(current_date, "%Y-%m-%d")
+            text += f"\n📅 *{format_date(dt)} ({current_date}):*\n"
+        text += f"  🕐 {appt['time']} — {appt['name']} | {appt['phone']}\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ========================
+# ASOSIY MESSAGE HANDLER
+# ========================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📅 Navbat olish":
+        return await navbat_olish_start(update, context)
+    elif text == "🕐 Bo'sh vaqtlar":
+        await bosh_vaqtlar(update, context)
+    elif text == "📍 Lokatsiya":
+        await lokatsiya(update, context)
+    elif text == "ℹ️ Ma'lumot":
+        await malumot(update, context)
+    elif text == "❌ Navbatni bekor qilish":
+        await bekor_qilish(update, context)
+    elif text == "📋 Bugungi mijozlar":
+        await bugungi_mijozlar(update, context)
+    elif text == "📊 Barcha navbatlar":
+        await barcha_navbatlar(update, context)
+
+# ========================
+# BOTNI ISHGA TUSHIRISH
+# ========================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^📅 Navbat olish$"), navbat_start)],
+
+    # Navbat olish tizimi (Conversation)
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("^📅 Navbat olish$"), navbat_olish_start),
+            CommandHandler("navbat", navbat_olish_start)
+        ],
         states={
-            CHOOSING_DATE: [CallbackQueryHandler(choose_date)],
-            CHOOSING_TIME: [CallbackQueryHandler(choose_time)],
-            ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
+            CHOOSING_DATE:  [CallbackQueryHandler(choose_date)],
+            CHOOSING_TIME:  [CallbackQueryHandler(choose_time)],
+            ENTERING_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
             ENTERING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_phone)],
-            CONFIRMING: [CallbackQueryHandler(confirm)],
+            CONFIRMING:     [CallbackQueryHandler(confirm_booking)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conv)],
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        allow_reentry=True
     )
+
+    # Handlerlarni ulash
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(del_cb, pattern="^(del_|close)"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    print("Bot ishga tushdi!")
+    app.add_handler(CommandHandler("cancel", cancel_conversation))
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(del_callback, pattern="^(del_|close)"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✂️ Turdibek_Barber boti muvaffaqiyatli ishga tushdi...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
+```
