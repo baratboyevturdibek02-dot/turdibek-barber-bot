@@ -19,8 +19,8 @@ from telegram.ext import (
 # ========================
 # SOZLAMALAR
 # ========================
-TOKEN = "SIZNING_BOT_TOKENINGIZ"  # @BotFather dan olingan token
-ADMIN_ID = 123456789              # Barberning Telegram ID si
+TOKEN = os.environ.get("TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 
 # Sartaroshxona lokatsiyasi
 LOCATION_LAT = 41.2995
