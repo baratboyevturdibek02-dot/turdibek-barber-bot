@@ -5,9 +5,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-LOCATION_LAT = 41.2995
-LOCATION_LON = 69.2401
-LOCATION_ADDRESS = "Toshkent sh., Chilonzor tumani, Bunyodkor ko'chasi 12-uy"
+LOCATION_LAT = 40,5130926
+LOCATION_LON = 68,7694332
+LOCATION_ADDRESS = " Gulistan, Sirdaryo Region,Firdavs Salon,Qurilish ko'chasi"
 DATA_FILE = "navbatlar.json"
 CHOOSING_DATE, CHOOSING_TIME, ENTERING_NAME, ENTERING_PHONE, CONFIRMING = range(5)
 
@@ -48,13 +48,13 @@ def get_next_days():
     return days
 
 def fmt(dt):
-    w = {0:"Dush",1:"Sesh",2:"Chor",3:"Pay",4:"Juma",5:"Shan"}
+    w = {0:"Dush",1:"Sesh",2:"Chor",3:"Pay",4:"Juma",5:"Shan",6:"Yak"}
     return f"{w[dt.weekday()]} {dt.strftime('%d.%m')}"
 
 def get_slots():
     slots = []
     t = datetime.strptime("09:00", "%H:%M")
-    e = datetime.strptime("19:00", "%H:%M")
+    e = datetime.strptime("22:00", "%H:%M")
     while t <= e:
         slots.append(t.strftime("%H:%M"))
         t += timedelta(minutes=30)
@@ -198,7 +198,7 @@ async def lokatsiya(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def malumot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✂️ *Turdibek Barber*\n\n💈 Xizmatlar:\n• Soch — 30.000\n• Soqol — 20.000\n• Soch+Soqol — 45.000\n• Bolalar — 20.000\n\n⏰ Dush-Shan 09:00-19:00\n📞 +998 90 123 45 67",
+        "✂️ *Turdibek Barber*\n\n💈 Xizmatlar:\n• Soch — 60.000\n• Soqol — 20.000\n• Soch+Soqol — 90.000\n• Bolalar — 40.000\n\n⏰ Dush-Shan 09:00-22:00\n📞 +998 94 971 04 05",
         parse_mode="Markdown")
 
 async def bekor_qilish(update: Update, context: ContextTypes.DEFAULT_TYPE):
